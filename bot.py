@@ -2,39 +2,13 @@ from flask import Flask, request
 import os
 import logging
 import requests
-import socket
-
-# --- ПРИНУДИТЕЛЬНАЯ НАСТРОЙКА DNS (исправляет ошибку) ---
-# Указываем конкретный DNS-сервер Google (8.8.8.8)
-def set_dns():
-    try:
-        # Меняем DNS-резолвер на системный (но с приоритетом 8.8.8.8)
-        import ctypes
-        import ctypes.wintypes
-        # Для Windows это не нужно, но для Linux (Render) работает через /etc/resolv.conf
-        # Мы просто пробуем использовать системный резолвер
-        pass
-    except:
-        pass
-
-# Принудительно резолвим домен заранее
-try:
-    import socket
-    ip = socket.gethostbyname('api-inference.huggingface.co')
-    logging.info(f"✅ Hugging Face IP: {ip}")
-except Exception as e:
-    logging.warning(f"Не удалось получить IP: {e}")
+import uuid
 
 app = Flask(__name__)
 logging.basicConfig(level=logging.INFO)
 
-# Токены
+# Токен Telegram
 TELEGRAM_TOKEN = os.environ.get('TELEGRAM_TOKEN')
-HF_API_TOKEN = os.environ.get('HF_API_TOKEN')
-
-# Конфигурация Hugging Face
-API_URL = "https://api-inference.huggingface.co/models/stabilityai/stable-diffusion-2"
-headers = {"Authorization": f"Bearer {HF_API_TOKEN}"}
 
 @app.route('/')
 def index():
@@ -73,39 +47,21 @@ def webhook():
                 )
             else:
                 send_message(chat_id, "🎨 Рисую картинку... Подождите немного!")
-
-                def query(payload):
-                    try:
-                        # Добавляем таймаут и повторные попытки
-                        response = requests.post(
-                            API_URL, 
-                            headers=headers, 
-                            json=payload,
-                            timeout=60  # Ждём до 60 секунд
-                        )
-                        return response
-                    except requests.exceptions.Timeout:
-                        raise Exception("⏰ Превышено время ожидания. Попробуйте ещё раз.")
-                    except requests.exceptions.ConnectionError:
-                        raise Exception("🔌 Не удалось подключиться к серверу. Попробуйте позже.")
-
+                
                 try:
-                    # Отправляем запрос
-                    response = query({"inputs": text})
+                    # Используем Pollinations.ai для генерации картинок
+                    # Это бесплатный сервис, не требует API-ключа
+                    unique_id = str(uuid.uuid4())
+                    image_url = f"https://image.pollinations.ai/prompt/{text.replace(' ', '%20')}?n={unique_id}"
                     
-                    # Проверяем ответ
+                    # Скачиваем картинку
+                    response = requests.get(image_url, timeout=60)
+                    
                     if response.status_code == 200:
-                        # Успешно! Отправляем картинку
                         send_photo(chat_id, response.content, f"Вот что я нарисовал по запросу: {text}")
                     else:
-                        # Если ошибка, пытаемся прочитать текст ошибки
-                        try:
-                            error_text = response.json()
-                            error_msg = error_text.get('error', str(error_text))
-                        except:
-                            error_msg = response.text[:200]  # Первые 200 символов
-                        send_message(chat_id, f"❌ Ошибка от сервера: {error_msg}")
-
+                        send_message(chat_id, f"❌ Ошибка от сервера: {response.status_code}")
+                        
                 except Exception as e:
                     send_message(chat_id, f"❌ Ошибка: {str(e)}")
 
