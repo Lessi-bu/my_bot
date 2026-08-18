@@ -2,21 +2,20 @@ from flask import Flask, request
 import os
 import logging
 import requests
-import google.generativeai as genai
 import base64
 from io import BytesIO
-from PIL import Image
 
 app = Flask(__name__)
 logging.basicConfig(level=logging.INFO)
 
-# Токены
+# 1. Получаем наши токены из переменных окружения Render
 TELEGRAM_TOKEN = os.environ.get('TELEGRAM_TOKEN')
-GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY')
+HF_API_TOKEN = os.environ.get('HF_API_TOKEN') # <-- Токен от Hugging Face
 
-# Настройка Gemini
-genai.configure(api_key=GEMINI_API_KEY)
-model = genai.GenerativeModel('gemini-2.0-flash-exp')
+# 2. Конфигурация модели Hugging Face
+# Используем популярную и стабильную модель Stable Diffusion
+API_URL = "https://api-inference.huggingface.co/models/stabilityai/stable-diffusion-2"
+headers = {"Authorization": f"Bearer {HF_API_TOKEN}"}
 
 @app.route('/')
 def index():
@@ -29,9 +28,9 @@ def webhook():
         if 'message' in data:
             chat_id = data['message']['chat']['id']
             text = data['message'].get('text', '')
-            
+
             if text == '/start':
-                send_message(chat_id, 
+                send_message(chat_id,
                     "👋 Привет! Я бот для генерации картинок!\n\n"
                     "Просто напиши мне описание картинки, и я её нарисую!\n"
                     "🎨 Каждый день у тебя есть 1 бесплатная генерация!\n\n"
@@ -45,8 +44,7 @@ def webhook():
                     "🤖 Как пользоваться:\n"
                     "1. Напиши мне описание картинки\n"
                     "2. Я сгенерирую её для тебя\n\n"
-                    "📊 У тебя есть 1 бесплатная генерация в день.\n"
-                    "💰 Дополнительные генерации можно будет купить позже."
+                    "📊 У тебя есть 1 бесплатная генерация в день."
                 )
             elif text == '/balance':
                 send_message(chat_id,
@@ -55,30 +53,31 @@ def webhook():
                     "💡 Скоро появится возможность купить ещё!"
                 )
             else:
-                # Генерация картинки
+                # --- Генерация изображения через Hugging Face ---
                 send_message(chat_id, "🎨 Рисую картинку... Подождите немного!")
+
+                # Функция для запроса к API
+                def query(payload):
+                    response = requests.post(API_URL, headers=headers, json=payload)
+                    return response.content
+
                 try:
-                    response = model.generate_content(
-                        f"Нарисуй: {text}"
-                    )
-                    
-                    # Проверяем, есть ли изображение в ответе
-                    if response.candidates and response.candidates[0].content and response.candidates[0].content.parts:
-                        # Получаем данные изображения
-                        image_part = response.candidates[0].content.parts[0]
-                        
-                        # Если изображение пришло как inline_data
-                        if hasattr(image_part, 'inline_data') and image_part.inline_data:
-                            image_data = base64.b64decode(image_part.inline_data.data)
-                            send_photo(chat_id, image_data, f"Вот что я нарисовал по запросу: {text}")
-                        else:
-                            send_message(chat_id, "❌ Не удалось получить изображение. Попробуйте другой запрос.")
+                    # Отправляем запрос в Hugging Face
+                    image_bytes = query({
+                        "inputs": text,  # Ваш запрос от пользователя
+                    })
+
+                    # Проверяем, не пришла ли ошибка в виде JSON
+                    if image_bytes.startswith(b'{') and b'error' in image_bytes:
+                        error_msg = image_bytes.decode('utf-8')
+                        send_message(chat_id, f"❌ Ошибка от сервера: {error_msg}")
                     else:
-                        send_message(chat_id, "❌ Не удалось получить изображение. Попробуйте другой запрос.")
-                        
+                        # Отправляем картинку обратно пользователю
+                        send_photo(chat_id, image_bytes, f"Вот что я нарисовал по запросу: {text}")
+
                 except Exception as e:
                     send_message(chat_id, f"❌ Ошибка при генерации: {str(e)}")
-        
+
         return "OK", 200
     except Exception as e:
         logging.error(f"Ошибка: {e}")
