@@ -3,6 +3,9 @@ import os
 import logging
 import requests
 import google.generativeai as genai
+import base64
+from io import BytesIO
+from PIL import Image
 
 app = Flask(__name__)
 logging.basicConfig(level=logging.INFO)
@@ -13,7 +16,7 @@ GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY')
 
 # Настройка Gemini
 genai.configure(api_key=GEMINI_API_KEY)
-model = genai.GenerativeModel('gemini-2.0-flash-exp-image-generation')
+model = genai.GenerativeModel('gemini-2.0-flash-exp')
 
 @app.route('/')
 def index():
@@ -56,16 +59,23 @@ def webhook():
                 send_message(chat_id, "🎨 Рисую картинку... Подождите немного!")
                 try:
                     response = model.generate_content(
-                        f"Нарисуй: {text}",
-                        generation_config={"response_modalities": ["IMAGE"]}
+                        f"Нарисуй: {text}"
                     )
-                    # Получаем ссылку на картинку
-                    image_url = response.candidates[0].content.parts[0].inline_data.data
-                    import base64
-                    image_data = base64.b64decode(image_url)
                     
-                    # Отправляем картинку
-                    send_photo(chat_id, image_data, f"Вот что я нарисовал по запросу: {text}")
+                    # Проверяем, есть ли изображение в ответе
+                    if response.candidates and response.candidates[0].content and response.candidates[0].content.parts:
+                        # Получаем данные изображения
+                        image_part = response.candidates[0].content.parts[0]
+                        
+                        # Если изображение пришло как inline_data
+                        if hasattr(image_part, 'inline_data') and image_part.inline_data:
+                            image_data = base64.b64decode(image_part.inline_data.data)
+                            send_photo(chat_id, image_data, f"Вот что я нарисовал по запросу: {text}")
+                        else:
+                            send_message(chat_id, "❌ Не удалось получить изображение. Попробуйте другой запрос.")
+                    else:
+                        send_message(chat_id, "❌ Не удалось получить изображение. Попробуйте другой запрос.")
+                        
                 except Exception as e:
                     send_message(chat_id, f"❌ Ошибка при генерации: {str(e)}")
         
