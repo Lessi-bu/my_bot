@@ -3,12 +3,16 @@ import os
 import logging
 import requests
 import uuid
+from googletrans import Translator
 
 app = Flask(__name__)
 logging.basicConfig(level=logging.INFO)
 
 # Токен Telegram
 TELEGRAM_TOKEN = os.environ.get('TELEGRAM_TOKEN')
+
+# Создаём переводчик
+translator = Translator()
 
 @app.route('/')
 def index():
@@ -25,7 +29,7 @@ def webhook():
             if text == '/start':
                 send_message(chat_id,
                     "👋 Привет! Я бот для генерации картинок!\n\n"
-                    "Просто напиши мне описание картинки, и я её нарисую!\n"
+                    "Просто напиши мне описание картинки на РУССКОМ языке, и я её нарисую!\n"
                     "🎨 Каждый день у тебя есть 1 бесплатная генерация!\n\n"
                     "Команды:\n"
                     "/start - приветствие\n"
@@ -35,8 +39,8 @@ def webhook():
             elif text == '/help':
                 send_message(chat_id,
                     "🤖 Как пользоваться:\n"
-                    "1. Напиши мне описание картинки\n"
-                    "2. Я сгенерирую её для тебя\n\n"
+                    "1. Напиши мне описание картинки на РУССКОМ языке\n"
+                    "2. Я переведу запрос на английский и сгенерирую картинку\n\n"
                     "📊 У тебя есть 1 бесплатная генерация в день."
                 )
             elif text == '/balance':
@@ -49,16 +53,27 @@ def webhook():
                 send_message(chat_id, "🎨 Рисую картинку... Подождите немного!")
                 
                 try:
-                    # Используем Pollinations.ai для генерации картинок
-                    # Это бесплатный сервис, не требует API-ключа
+                    # --- ПЕРЕВОД НА АНГЛИЙСКИЙ ---
+                    try:
+                        translation = translator.translate(text, dest='en')
+                        prompt_en = translation.text
+                        logging.info(f"Оригинал: {text} -> Перевод: {prompt_en}")
+                    except Exception as e:
+                        # Если перевод не сработал, используем оригинал
+                        logging.warning(f"Перевод не сработал: {e}")
+                        prompt_en = text
+                    
+                    # Генерируем картинку с переведённым запросом
                     unique_id = str(uuid.uuid4())
-                    image_url = f"https://image.pollinations.ai/prompt/{text.replace(' ', '%20')}?n={unique_id}"
+                    image_url = f"https://image.pollinations.ai/prompt/{prompt_en.replace(' ', '%20')}?n={unique_id}&width=1024&height=1024"
                     
                     # Скачиваем картинку
                     response = requests.get(image_url, timeout=60)
                     
                     if response.status_code == 200:
-                        send_photo(chat_id, response.content, f"Вот что я нарисовал по запросу: {text}")
+                        # Отправляем картинку с обоими запросами (русским и английским)
+                        caption = f"🎨 Ваш запрос: {text}\n🌍 Перевод: {prompt_en}"
+                        send_photo(chat_id, response.content, caption)
                     else:
                         send_message(chat_id, f"❌ Ошибка от сервера: {response.status_code}")
                         
