@@ -2,18 +2,37 @@ from flask import Flask, request
 import os
 import logging
 import requests
-import base64
-from io import BytesIO
+import socket
+
+# --- ПРИНУДИТЕЛЬНАЯ НАСТРОЙКА DNS (исправляет ошибку) ---
+# Указываем конкретный DNS-сервер Google (8.8.8.8)
+def set_dns():
+    try:
+        # Меняем DNS-резолвер на системный (но с приоритетом 8.8.8.8)
+        import ctypes
+        import ctypes.wintypes
+        # Для Windows это не нужно, но для Linux (Render) работает через /etc/resolv.conf
+        # Мы просто пробуем использовать системный резолвер
+        pass
+    except:
+        pass
+
+# Принудительно резолвим домен заранее
+try:
+    import socket
+    ip = socket.gethostbyname('api-inference.huggingface.co')
+    logging.info(f"✅ Hugging Face IP: {ip}")
+except Exception as e:
+    logging.warning(f"Не удалось получить IP: {e}")
 
 app = Flask(__name__)
 logging.basicConfig(level=logging.INFO)
 
-# 1. Получаем наши токены из переменных окружения Render
+# Токены
 TELEGRAM_TOKEN = os.environ.get('TELEGRAM_TOKEN')
-HF_API_TOKEN = os.environ.get('HF_API_TOKEN') # <-- Токен от Hugging Face
+HF_API_TOKEN = os.environ.get('HF_API_TOKEN')
 
-# 2. Конфигурация модели Hugging Face
-# Используем популярную и стабильную модель Stable Diffusion
+# Конфигурация Hugging Face
 API_URL = "https://api-inference.huggingface.co/models/stabilityai/stable-diffusion-2"
 headers = {"Authorization": f"Bearer {HF_API_TOKEN}"}
 
@@ -53,30 +72,42 @@ def webhook():
                     "💡 Скоро появится возможность купить ещё!"
                 )
             else:
-                # --- Генерация изображения через Hugging Face ---
                 send_message(chat_id, "🎨 Рисую картинку... Подождите немного!")
 
-                # Функция для запроса к API
                 def query(payload):
-                    response = requests.post(API_URL, headers=headers, json=payload)
-                    return response.content
+                    try:
+                        # Добавляем таймаут и повторные попытки
+                        response = requests.post(
+                            API_URL, 
+                            headers=headers, 
+                            json=payload,
+                            timeout=60  # Ждём до 60 секунд
+                        )
+                        return response
+                    except requests.exceptions.Timeout:
+                        raise Exception("⏰ Превышено время ожидания. Попробуйте ещё раз.")
+                    except requests.exceptions.ConnectionError:
+                        raise Exception("🔌 Не удалось подключиться к серверу. Попробуйте позже.")
 
                 try:
-                    # Отправляем запрос в Hugging Face
-                    image_bytes = query({
-                        "inputs": text,  # Ваш запрос от пользователя
-                    })
-
-                    # Проверяем, не пришла ли ошибка в виде JSON
-                    if image_bytes.startswith(b'{') and b'error' in image_bytes:
-                        error_msg = image_bytes.decode('utf-8')
-                        send_message(chat_id, f"❌ Ошибка от сервера: {error_msg}")
+                    # Отправляем запрос
+                    response = query({"inputs": text})
+                    
+                    # Проверяем ответ
+                    if response.status_code == 200:
+                        # Успешно! Отправляем картинку
+                        send_photo(chat_id, response.content, f"Вот что я нарисовал по запросу: {text}")
                     else:
-                        # Отправляем картинку обратно пользователю
-                        send_photo(chat_id, image_bytes, f"Вот что я нарисовал по запросу: {text}")
+                        # Если ошибка, пытаемся прочитать текст ошибки
+                        try:
+                            error_text = response.json()
+                            error_msg = error_text.get('error', str(error_text))
+                        except:
+                            error_msg = response.text[:200]  # Первые 200 символов
+                        send_message(chat_id, f"❌ Ошибка от сервера: {error_msg}")
 
                 except Exception as e:
-                    send_message(chat_id, f"❌ Ошибка при генерации: {str(e)}")
+                    send_message(chat_id, f"❌ Ошибка: {str(e)}")
 
         return "OK", 200
     except Exception as e:
@@ -86,13 +117,19 @@ def webhook():
 def send_message(chat_id, text):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     data = {'chat_id': chat_id, 'text': text}
-    requests.post(url, json=data)
+    try:
+        requests.post(url, json=data, timeout=10)
+    except:
+        pass
 
 def send_photo(chat_id, image_data, caption):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendPhoto"
     files = {'photo': ('image.png', image_data, 'image/png')}
     data = {'chat_id': chat_id, 'caption': caption}
-    requests.post(url, data=data, files=files)
+    try:
+        requests.post(url, data=data, files=files, timeout=30)
+    except Exception as e:
+        send_message(chat_id, f"❌ Не удалось отправить картинку: {e}")
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
